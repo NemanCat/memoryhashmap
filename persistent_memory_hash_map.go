@@ -1,65 +1,59 @@
-// тип PersistentMemoryHashMap реализует простой thread-safe map в памяти с сохранением его элементов на диске
-// элементы map сохраняются в key - value БД Bolt
-// при создании объекта типа осуществляется попытка загрузки в map данных из БД Bolt
-// в случае невозможности по какой-либо причине подключиться к БД Bolt данные хранятся только в памяти
-// ключи map имеют тип string
-// для сохранения в map экземпляров объектов объекты должны реализовывать интерфейс BaseObjectInterface
+//шина событий
+//hashmap в памяти с сохранением состояния в БД Bolt
+//в качестве ключей map допускаются только строки
 
-package memoryhashmap
+package eventbus
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sync"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
 
-// -----------------------------------------
-// хэшированный map в памяти с сохранением элементов на диск
-// элементы map сохраняются в key - value хранилище Bolt
-// может хранить любые объекты реализующие интерфейс BaseObjectInterface
 type PersistentMemoryHashMap struct {
-	//тип объектов хранящихся в map
-	objtype reflect.Type
 	//map в памяти
-	memory_map *MemoryHashMap
+	list map[string][]byte
 	//директория файла БД Bolt
 	dbfolder string
 	//имя файла БД Bolt
 	dbfile string
+	//имя bucket
+	bucket string
 	//флаг доступности сохранения данных на диске
 	//если false то данные на диске не сохраняются, функционирует как MemoryHashMap
 	is_persistence_available bool
 }
 
-// ----------------------------------------------
-// методы типа
+// ------------------------------------------------------
 // количество объектов в списке
 func (pmhm *PersistentMemoryHashMap) Count() int {
 	lock := &sync.RWMutex{}
 	lock.RLock()
 	defer lock.RUnlock()
-	return len(pmhm.memory_map.list)
+	return len(pmhm.list)
 }
 
 // получение списка всех элементов map
-func (pmhm *PersistentMemoryHashMap) GetList() map[string]BaseObjectInterface {
+func (pmhm *PersistentMemoryHashMap) GetList() map[string][]byte {
 	lock := &sync.RWMutex{}
 	lock.RLock()
 	defer lock.RUnlock()
-	return pmhm.memory_map.list
+	return pmhm.list
 }
 
 // поиск элемента map по ключу
 // key ключ искомого элемента
 // возвращает nil если в map отсутствует элемент с таким ключом
-func (pmhm *PersistentMemoryHashMap) FindByKey(key string) BaseObjectInterface {
-	return pmhm.memory_map.FindByKey(key)
+func (pmhm *PersistentMemoryHashMap) FindByKey(key string) []byte {
+	rec, found := pmhm.list[key]
+	if !found {
+		return nil
+	}
+	return rec
 }
 
 // добавление нового элемента в map
@@ -67,11 +61,11 @@ func (pmhm *PersistentMemoryHashMap) FindByKey(key string) BaseObjectInterface {
 // если элемент с таким ключом отсутствует в map будет добавлен новый элемент
 // key   ключ элемента
 // value значение нового элемента
-func (pmhm *PersistentMemoryHashMap) AddUpdateObject(key string, value BaseObjectInterface) {
+func (pmhm *PersistentMemoryHashMap) AddUpdateObject(key string, value []byte) {
 	lock := &sync.RWMutex{}
 	lock.Lock()
 	defer lock.Unlock()
-	pmhm.memory_map.list[key] = value
+	pmhm.list[key] = value
 	if pmhm.is_persistence_available {
 		//пытаемся сохранить новый элемент в БД Bolt
 		//проверяем существует ли директория файла БД
@@ -92,7 +86,7 @@ func (pmhm *PersistentMemoryHashMap) AddUpdateObject(key string, value BaseObjec
 		}
 		//создаём в БД bucket с именем default если он не существует
 		err = db.Update(func(tx *bolt.Tx) error {
-			_, err := tx.CreateBucketIfNotExists([]byte("default"))
+			_, err := tx.CreateBucketIfNotExists([]byte(pmhm.bucket))
 			if err != nil {
 				return err
 			}
@@ -103,17 +97,13 @@ func (pmhm *PersistentMemoryHashMap) AddUpdateObject(key string, value BaseObjec
 			pmhm.is_persistence_available = false
 			return
 		}
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return
-		}
 		err = db.Update(
 			func(tx *bolt.Tx) error {
 				var bucket *bolt.Bucket
 				var err error
-				bucket = tx.Bucket([]byte("default"))
+				bucket = tx.Bucket([]byte(pmhm.bucket))
 				//сохраняем
-				err = bucket.Put([]byte(key), []byte(encoded))
+				err = bucket.Put([]byte(key), value)
 				if err != nil {
 					return err
 				}
@@ -135,7 +125,7 @@ func (pmhm *PersistentMemoryHashMap) DeleteObject(key string) {
 	lock := &sync.RWMutex{}
 	lock.Lock()
 	defer lock.Unlock()
-	delete(pmhm.memory_map.list, key)
+	delete(pmhm.list, key)
 	if pmhm.is_persistence_available {
 		//проверяем существует ли директория файла БД
 		_, err := os.Stat(pmhm.dbfolder)
@@ -155,7 +145,7 @@ func (pmhm *PersistentMemoryHashMap) DeleteObject(key string) {
 		}
 		//создаём в БД bucket с именем default если он не существует
 		err = db.Update(func(tx *bolt.Tx) error {
-			_, err := tx.CreateBucketIfNotExists([]byte("default"))
+			_, err := tx.CreateBucketIfNotExists([]byte(pmhm.bucket))
 			if err != nil {
 				return err
 			}
@@ -170,7 +160,7 @@ func (pmhm *PersistentMemoryHashMap) DeleteObject(key string) {
 			func(tx *bolt.Tx) error {
 				var bucket *bolt.Bucket
 				var err error
-				bucket = tx.Bucket([]byte("default"))
+				bucket = tx.Bucket([]byte(pmhm.bucket))
 				//сохраняем
 				err = bucket.Delete([]byte(key))
 				if err != nil {
@@ -187,18 +177,18 @@ func (pmhm *PersistentMemoryHashMap) DeleteObject(key string) {
 
 // ---------------------------------------------
 // создание экземпляра объекта
-// objtype  тип элементов map
 // dbfolder директория в которой располагается файл БД Bolt
 // dbfile   имя файла БД Bolt
+// bucket   имя bucket
 // возвращает ссылку на новый объект типа
 // возвращает ошибку доступа к БД Bolt
 // в случае наличия ошибки доступа к БД объект может использоваться для хранения данных только в памяти
-func CreatePersistentMemoryHashMap(objtype reflect.Type, dbfolder string, dbfile string) (*PersistentMemoryHashMap, error) {
+func CreatePersistentMemoryHashMap(dbfolder string, dbfile string, bucket string) (*PersistentMemoryHashMap, error) {
 	pmhm := new(PersistentMemoryHashMap)
-	pmhm.objtype = objtype
-	pmhm.memory_map = CreateMemoryHashMap()
+	pmhm.list = make(map[string][]byte)
 	pmhm.dbfolder = dbfolder
 	pmhm.dbfile = dbfile
+	pmhm.bucket = bucket
 	//пытаемся открыть БД Bolt
 	dbpath := filepath.Join(dbfolder, dbfile)
 	lock := new(sync.RWMutex)
@@ -224,7 +214,7 @@ func CreatePersistentMemoryHashMap(objtype reflect.Type, dbfolder string, dbfile
 
 	//создаём в БД bucket с именем default если он не существует
 	err = db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte("default"))
+		_, err := tx.CreateBucketIfNotExists([]byte(pmhm.bucket))
 		if err != nil {
 			return err
 		}
@@ -237,21 +227,12 @@ func CreatePersistentMemoryHashMap(objtype reflect.Type, dbfolder string, dbfile
 	}
 	//пытаемся загрузить данные из БД Bolt
 	err = db.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte("default"))
+		bucket := tx.Bucket([]byte(pmhm.bucket))
 		if bucket == nil {
 			return errors.New("bucket does not exist")
 		}
 		bucket.ForEach(func(k, v []byte) error {
-			var tmp = reflect.New(objtype)
-			method := tmp.MethodByName("UnmarshalBaseObjectJSON")
-			inputs := make([]reflect.Value, 1)
-			inputs[0] = reflect.ValueOf(v)
-			res := method.Call(inputs)
-			message := res[0].String()
-			if len(message) != 0 {
-				return errors.New(message)
-			}
-			pmhm.memory_map.AddUpdateObject(string(k), tmp.Interface().(BaseObjectInterface))
+			pmhm.list[string(k)] = v
 			return nil
 		})
 		return nil
