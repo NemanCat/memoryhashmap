@@ -2,7 +2,7 @@
 //hashmap в памяти с сохранением состояния в БД Bolt
 //в качестве ключей map допускаются только строки
 
-package eventbus
+package memoryhashmap
 
 import (
 	"errors"
@@ -61,7 +61,7 @@ func (pmhm *PersistentMemoryHashMap) FindByKey(key string) []byte {
 // если элемент с таким ключом отсутствует в map будет добавлен новый элемент
 // key   ключ элемента
 // value значение нового элемента
-func (pmhm *PersistentMemoryHashMap) AddUpdateObject(key string, value []byte) {
+func (pmhm *PersistentMemoryHashMap) AddUpdateObject(key string, value []byte) error {
 	lock := &sync.RWMutex{}
 	lock.Lock()
 	defer lock.Unlock()
@@ -73,7 +73,7 @@ func (pmhm *PersistentMemoryHashMap) AddUpdateObject(key string, value []byte) {
 		if os.IsNotExist(err) {
 			//функционал сохранения данных на диск не доступен
 			pmhm.is_persistence_available = false
-			return
+			return err
 		}
 		//открываем БД
 		dbpath := filepath.Join(pmhm.dbfolder, pmhm.dbfile)
@@ -82,7 +82,7 @@ func (pmhm *PersistentMemoryHashMap) AddUpdateObject(key string, value []byte) {
 		if err != nil {
 			//не удалось открыть БД Bolt, функционал сохранения данных на диск не доступен
 			pmhm.is_persistence_available = false
-			return
+			return err
 		}
 		//создаём в БД bucket с именем default если он не существует
 		err = db.Update(func(tx *bolt.Tx) error {
@@ -95,7 +95,7 @@ func (pmhm *PersistentMemoryHashMap) AddUpdateObject(key string, value []byte) {
 		if err != nil {
 			//не удалось создать bucket, функционал сохранения данных на диск не доступен
 			pmhm.is_persistence_available = false
-			return
+			return err
 		}
 		err = db.Update(
 			func(tx *bolt.Tx) error {
@@ -115,13 +115,15 @@ func (pmhm *PersistentMemoryHashMap) AddUpdateObject(key string, value []byte) {
 		if err != nil {
 			//функционал сохранения данных на диск не доступен
 			pmhm.is_persistence_available = false
+			return err
 		}
 	}
+	return nil
 }
 
 // удаление из списка элемента с указанным ключом
 // key ключ удаляемого элемента
-func (pmhm *PersistentMemoryHashMap) DeleteObject(key string) {
+func (pmhm *PersistentMemoryHashMap) DeleteObject(key string) error {
 	lock := &sync.RWMutex{}
 	lock.Lock()
 	defer lock.Unlock()
@@ -132,7 +134,7 @@ func (pmhm *PersistentMemoryHashMap) DeleteObject(key string) {
 		if os.IsNotExist(err) {
 			//функционал сохранения данных на диск не доступен
 			pmhm.is_persistence_available = false
-			return
+			return err
 		}
 		//пытаемся удалить объект из БД Bolt
 		dbpath := filepath.Join(pmhm.dbfolder, pmhm.dbfile)
@@ -141,7 +143,7 @@ func (pmhm *PersistentMemoryHashMap) DeleteObject(key string) {
 		if err != nil {
 			//не удалось открыть БД Bolt, функционал сохранения данных на диск не доступен
 			pmhm.is_persistence_available = false
-			return
+			return err
 		}
 		//создаём в БД bucket с именем default если он не существует
 		err = db.Update(func(tx *bolt.Tx) error {
@@ -154,7 +156,7 @@ func (pmhm *PersistentMemoryHashMap) DeleteObject(key string) {
 		if err != nil {
 			//не удалось создать bucket, функционал сохранения данных на диск не доступен
 			pmhm.is_persistence_available = false
-			return
+			return err
 		}
 		err = db.Update(
 			func(tx *bolt.Tx) error {
@@ -171,8 +173,10 @@ func (pmhm *PersistentMemoryHashMap) DeleteObject(key string) {
 		if err != nil {
 			//функционал сохранения данных на диск не доступен
 			pmhm.is_persistence_available = false
+			return err
 		}
 	}
+	return nil
 }
 
 // ---------------------------------------------
